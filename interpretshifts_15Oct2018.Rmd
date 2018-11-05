@@ -1,0 +1,290 @@
+---
+title: "Interpretation tool for EWP"
+author: "John Ray; Chad Hazlett"
+output: html_document
+---
+
+```{r setup_and_reminders, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 12, fig.height = 8)
+```
+
+## Code and summary plots {.tabset}
+
+### Replication code
+
+```{r rep}
+library(dplyr)
+library(glmnet)
+library(reshape2)
+library(ggplot2)
+
+# load the data
+load('WorkspaceImageAfterModeling_15Oct2018.RData')
+
+# Choose which variables from the workspace to be using
+# (thus chosing a model year and the window) -- 2017, 2year). 
+Xtest=Xtest2017
+everything=everything2017
+model.out = elastic.cv.2017.2yr
+coefs=coef(model.out, s = "lambda.min")  #should match coefsfull2_2017.2yr
+
+#Check predictions
+risk_check = predict.cv.glmnet(model.out, newx = as.matrix(Xtest2017[,predictornames]),  s=model.out$lambda.min, type="response")
+
+risk_check[1:5]  # should match  elastic.predictions.2017.2yr[1:5], though rounded
+
+# newx: just the Xs, as a matrix
+new_preds = matrix(nrow = dim(Xtest)[1], ncol = length(predictornames))
+colnames(new_preds) <- predictornames
+
+# for every IV, take the mean of the IV or mode if 0/1, and rerun the glmnet prediction with observations' values set to that IV's mean
+for(i in 1:length(predictornames)){
+  newx = Xtest[, predictornames] %>% as.matrix()
+  iter_mu <- rep(NA, nrow(newx))
+  
+  # if the variable has 3 or fewer unique values, set it to mode, not mean
+  if(length(table(newx[, predictornames[i]] )) <= 3){
+    iter_mu <- rep(as.numeric(names(tail(sort(table(newx[, predictornames[i]] )), 1))), nrow(newx))
+  } else {
+    iter_mu <- rep(mean(Xtest[, predictornames[i]], na.rm = T), nrow(newx))
+  }
+  
+  if(predictornames[i] %in% c('polity2.fl.2', 'polity2.fl.3')){
+    iter_mu <- rep(0, nrow(newx))
+  }
+  
+  for(j in 1:length(iter_mu)){
+    if(colnames(newx)[predictornames[i]] %in% c('reg.afr', 'reg.eap', 'reg.eur', 'reg.mna', 'reg.sca') & sum(newx[j, c('reg.afr', 'reg.eap', 'reg.eur', 'reg.mna', 'reg.sca')]) > 0){
+        iter_mu[j] <- 0
+    }
+  }
+  newx[, predictornames[i]] <- iter_mu
+  
+  new_preds[, predictornames[i]] <- predict.cv.glmnet(model.out, newx = newx,  s="lambda.min", type="response")
+}
+
+# New column names are the 'predictornames' values plus '_new_mean'
+colnames(new_preds) <- paste0(predictornames, '_new_mean')
+
+# Combine the new predictions to the full data
+pred_dat <- cbind(newx, new_preds)
+
+# compute the prediction shifts as 'new prediction with IVs set to their means - original prediction'
+mean_shifts = matrix(nrow = dim(newx)[1], ncol = dim(newx)[2])
+
+# do this for each IV
+for(i in 1:length(predictornames)){
+  mean_shifts[, i] <-  Xtest$risk2017.2yr - new_preds[, i]
+}
+
+# the sizes of the shifts from the original predictions to the new predictions with each IV changed one at a time are stored in the variables labeled predictornames plus '_diffs_with_mean_shifts'
+colnames(mean_shifts) <- paste0(predictornames, '_diffs_with_mean_shifts')
+
+# merge the new IVs to the full data
+pred_dat <- cbind(pred_dat, mean_shifts) %>% data.frame()
+pred_dat$risk2 <- Xtest$risk2017.2yr
+pred_dat$country_name <- as.character(Xtest$country_name)
+
+# create an index to plot the top 25 risk countries
+#pred_dat <- pred_dat[rev(order(pred_dat$risk2)),]
+#pred_dat$plot_order <- 1:nrow(pred_dat)
+#pred_dat <- pred_dat[order(pred_dat$plot_order),]
+
+# Put all the actual mean shifts into one region variable, then join that to the plot data
+new_mean_region <- pred_dat$risk2
+new_mean_region[pred_dat$reg.afr == 1] <- pred_dat$reg.afr_new_mean[pred_dat$reg.afr == 1]
+new_mean_region[pred_dat$reg.eap == 1] <- pred_dat$reg.eap_new_mean[pred_dat$reg.eap == 1]
+new_mean_region[pred_dat$reg.eur == 1] <- pred_dat$reg.eur_new_mean[pred_dat$reg.eur == 1]
+new_mean_region[pred_dat$reg.mna == 1] <- pred_dat$reg.mna_new_mean[pred_dat$reg.mna == 1]
+new_mean_region[pred_dat$reg.sca == 1] <- pred_dat$reg.sca_new_mean[pred_dat$reg.sca == 1]
+
+# Put all the new predictions into one polity variable, then join that to the plot data
+new_mean_polity <- pred_dat$risk2
+new_mean_polity[pred_dat$polity2.fl.2 == 1] <- pred_dat$polity2.fl.2_new_mean[pred_dat$polity2.fl.2 == 1]
+new_mean_polity[pred_dat$polity2.fl.3 == 1] <- pred_dat$polity2.fl.3_new_mean[pred_dat$polity2.fl.3 == 1]
+
+pred_dat$new_mean_region <- new_mean_region
+pred_dat$new_mean_polity <- new_mean_polity
+
+# Same thing with the mean shifts
+new_mean_shift_region <- rep(0, nrow(pred_dat))
+new_mean_shift_region[pred_dat$reg.afr == 1] <- pred_dat$reg.afr_diffs_with_mean_shifts[pred_dat$reg.afr == 1]
+new_mean_shift_region[pred_dat$reg.eap == 1] <- pred_dat$reg.eap_diffs_with_mean_shifts[pred_dat$reg.eap == 1]
+new_mean_shift_region[pred_dat$reg.eur == 1] <- pred_dat$reg.eur_diffs_with_mean_shifts[pred_dat$reg.eur == 1]
+new_mean_shift_region[pred_dat$reg.mna == 1] <- pred_dat$reg.mna_diffs_with_mean_shifts[pred_dat$reg.mna == 1]
+new_mean_shift_region[pred_dat$reg.sca == 1] <- pred_dat$reg.sca_diffs_with_mean_shifts[pred_dat$reg.sca == 1]
+
+new_mean_shift_polity <- rep(0, nrow(pred_dat))
+new_mean_shift_polity[pred_dat$polity2.fl.2 == 1] <- pred_dat$polity2.fl.2_diffs_with_mean_shifts[pred_dat$polity2.fl.2 == 1]
+new_mean_shift_polity[pred_dat$polity2.fl.3 == 1] <- pred_dat$polity2.fl.3_diffs_with_mean_shifts[pred_dat$polity2.fl.3 == 1]
+
+pred_dat$new_mean_shift_region <- new_mean_shift_region
+pred_dat$new_mean_shift_polity <- new_mean_shift_polity
+
+mean_vars <- c(colnames(new_preds)[!(colnames(new_preds) %in% c('reg.afr_new_mean','reg.eap_new_mean','reg.eur_new_mean','reg.mna_new_mean','reg.sca_new_mean','polity2.fl.2_new_mean','polity2.fl.3_new_mean'))], 'new_mean_region', 'new_mean_polity')
+
+# format the data for plotting
+mean_plotdat = melt(pred_dat[, c('country_name', mean_vars)], id.vars = c('country_name'))
+mean_plotdat$variable = gsub("_new_mean", "", mean_plotdat$variable)
+
+shift_vars <- c(colnames(mean_shifts)[!colnames(mean_shifts) %in% c('reg.afr_diffs_with_mean_shifts', 'reg.eap_diffs_with_mean_shifts', 'reg.eur_diffs_with_mean_shifts', 'reg.mna_diffs_with_mean_shifts', 'reg.sca_diffs_with_mean_shifts', 'polity2.fl.2_diffs_with_mean_shifts', 'polity2.fl.3_diffs_with_mean_shifts')], 'new_mean_shift_region','new_mean_shift_polity')
+
+shift_size_plotdat = melt(pred_dat[, c('country_name', shift_vars)], id.vars = c('country_name'))
+shift_size_plotdat$variable = gsub("_diffs_with_mean_shifts", "", shift_size_plotdat$variable)
+
+
+# merge the original predictions to the predicted mean shifts
+mean_shift_plotdat_1 = pred_dat[, c('country_name', 'risk2') ]
+
+mean_shift_plotdat_2 = melt(pred_dat[, c('country_name', shift_vars)], id.vars = c('country_name'))
+
+mean_shift_plotdat = dplyr::left_join(mean_shift_plotdat_1, mean_shift_plotdat_2)
+
+mean_shift_plotdat$variable = gsub("_new_mean", "", mean_shift_plotdat$variable, fixed = T)
+
+colnames(mean_shift_plotdat) <- c('country_name','start','variable','end')
+
+pred_dat <- pred_dat[, !colnames(pred_dat) %in% c('includesnonstate')]
+pred_dat <- pred_dat[rank(pred_dat$risk2), ]
+
+write.csv(pred_dat, 'new_prediction_data_2.csv', row.names = F)
+
+predictornames <- predictornames[!predictornames %in% c('includesnonstate')]
+```
+
+```{r topshiftdata}
+# Make thing that gives top X shifters and there amount or at least sign, by country
+
+colstouse = c("country_name", "risk2","new_mean_shift_region",	"new_mean_shift_polity", "anymk.ongoing_diffs_with_mean_shifts",	"anymk.ever_diffs_with_mean_shifts", "countryage.ln_diffs_with_mean_shifts", "popsize.ln.combined_diffs_with_mean_shifts",	"imr.sqrt_diffs_with_mean_shifts", 
+"gdppcgrowth.combined_diffs_with_mean_shifts",	"ios.iccpr1_diffs_with_mean_shifts",	"includesnonstate_diffs_with_mean_shifts",	"durable.ln_diffs_with_mean_shifts",	"minorityrule_diffs_with_mean_shifts",	"elf.ethnic_diffs_with_mean_shifts",	"battledeaths.ln_diffs_with_mean_shifts",	"candidaterestriction_diffs_with_mean_shifts",	"partyban_diffs_with_mean_shifts",	"judicialreform_diffs_with_mean_shifts",	"religiousfreedom_diffs_with_mean_shifts",	"pol_killing_approved_diffs_with_mean_shifts",	"freemove_men4_diffs_with_mean_shifts",	"freemove_women4_diffs_with_mean_shifts",	"freediscussion_diffs_with_mean_shifts",	"social_inequality_diffs_with_mean_shifts",	"even_civilrights_diffs_with_mean_shifts",	"repress_civilsoc_diffs_with_mean_shifts",	"social_power_dist_diffs_with_mean_shifts",	"tradeshare.ln.combined_diffs_with_mean_shifts",	"coup.try.5yr_diffs_with_mean_shifts")
+
+usefulshiftdata = pred_dat[,colstouse]
+
+colnames(usefulshiftdata)[3:4]=c("region","polity")
+
+colnames(usefulshiftdata)=gsub(colnames(usefulshiftdata), pattern="_diffs_with_mean_shifts", replacement="")
+
+usefulshiftdata = usefulshiftdata %>% arrange(-risk2)
+
+# Create long list where first column is country name repeated P times; second column holds the sequence of top P "shifting" variables for that country, and the next column contains the amount (and sign) of the corresponding shifts. 
+
+P=5  # number of top factors to include
+rowindex=1
+bigshifters=matrix(NA,nrow=P*nrow(usefulshiftdata), ncol=3)
+colnames(bigshifters) = c("country_name","variable","shift")
+for (j in 1:nrow(usefulshiftdata)){
+  print(usefulshiftdata$country_name[j])
+  subdat=-1*usefulshiftdata[j,3:ncol(usefulshiftdata)] #-1 to change direction so +1 is higher risk.
+  
+  orderindex=order(abs(subdat), decreasing=TRUE)
+  keepers=subdat[orderindex][1:P]
+  
+  bigshifters[seq(rowindex,rowindex+P-1),"country_name"]=usefulshiftdata$country_name[j]  
+
+  bigshifters[seq(rowindex,rowindex+P-1),"variable"] = names(keepers)  
+  bigshifters[seq(rowindex,rowindex+P-1),"shift"] = as.numeric(keepers)  
+
+  rowindex=rowindex+P  
+}
+write.csv(file = "bigshiftvariables_15Oct2018.csv", bigshifters)
+```
+### Variable importances
+
+```{r var_imp, echo = FALSE}
+importances = data.frame(
+  varname = rownames(coefs),
+  coefvalue = as.numeric(coefs),
+  stringsAsFactors = F
+)
+
+importances$stdevs = rep(NA, nrow(importances))
+
+for(i in 2:nrow(importances)){
+  importances$stdevs[i] <- sd(everything[, importances$varname[i]])
+}
+
+# For "includesnonstate", it has no variance in the current sample
+# but give it a fake SD so that doesn't make it unimportant
+importances$stdevs[importances$varname=="includesnonstate"] <- .5
+
+importances$var_importance = importances$coefvalue*importances$stdevs
+
+rownames(importances)=importances$varname
+
+knitr::kable(importances[order(-abs(importances$var_importance)),], row.names = FALSE, col.names = c('Variable','Coefficient','Var SD','Importance'))
+```
+
+### Plots of prediction shifts from original prediction
+
+```{r shift_change, echo = FALSE}
+
+importances_nonzero=importances %>% filter(coefvalue>0) %>% arrange(-abs(var_importance))
+
+shift_vars <- importances_nonzero$varname
+
+shift_vars <- shift_vars[!shift_vars %in% c('(Intercept)', 'includesnonstate', 'polity2.fl.2', 'polity2.fl.3', 'reg.afr','reg.eap','reg.eur','reg.mna','reg.sca')]
+shift_vars <- c('new_mean_shift_polity', 'new_mean_shift_region', shift_vars)
+
+mean_shift_plotdat$variable <- gsub('_diffs_with_mean_shifts', '', mean_shift_plotdat$variable, fixed = T)
+
+for(i in 1:length(shift_vars)){
+  
+  sub <- mean_shift_plotdat[mean_shift_plotdat$variable == shift_vars[i],]
+  
+  #This seems to have order by post-change risk, which is wrong.
+  #sub <- sub[rev(order(abs(sub$end))),]
+  #sub <- sub[1:30,]
+  
+  # Ordering by "starting" (actual) risk makes sense:
+  sub <- sub[rev(order(sub$start)),]
+  sub = sub[1:30,]
+  sub$plot_order <- nrow(sub):1
+  
+  # I don't think we want this:
+  #sub <- sub[order(as.numeric(rownames(sub))),]
+  
+ p <- ggplot(data = sub, aes(x = factor(plot_order), y = start)) +
+   geom_segment(aes(xend = factor(plot_order), y = start, yend = start - end), arrow = arrow(length = unit(0.03, "npc"))) +
+   geom_point() +
+   scale_x_discrete(breaks = factor(sub$plot_order), labels = as.character(sub$country_name)) +
+   theme_classic() +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1), text = element_text(size = 14)) +
+   labs(x = '', y = 'Mean shift', title = paste0("Setting ", shift_vars[i], " to its mode (or mean if continuous)\nand change in MK prob, 2-year horizon")) +
+   coord_flip()
+  
+  print(p)
+}
+```
+
+
+### Shifts by country
+
+```{r shifts_by_country, echo = FALSE}
+#importances <- importances[importances$varname %in% shift_vars,]
+#importances <- importances[order(abs(importances$var_importance), decreasing = TRUE),]
+#Xtest <- Xtest[order(Xtest$risk2017.2yr, decreasing = T),]
+
+Xtest = Xtest %>% arrange(-risk2017.2yr)
+
+Xtest.top = Xtest[1:50,]  #limit to top 50.
+
+#for(i in 1:length(Xtest$country_name)){
+for(i in 1:nrow(Xtest.top)){
+  
+  sub <- mean_shift_plotdat[mean_shift_plotdat$country_name == Xtest.top$country_name[i],]
+  
+  
+  sub$plot_order <- 1:nrow(sub)
+  
+  p <- ggplot(data = sub, aes(x = factor(plot_order), y = start)) +
+   geom_segment(aes(xend = factor(plot_order), y = start, yend = start - end), arrow = arrow(length = unit(0.03, "npc"))) +
+   geom_point() +
+   scale_x_discrete(breaks = factor(sub$plot_order), labels = as.character(sub$variable)) +
+   theme_classic() +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1), text = element_text(size = 14)) +
+   labs(x = '', y = 'Mean shift', title = paste0("MK risk change in ", sub$country_name[1],"\nby shifting variables to mean/mode, 2-year horizon")) +
+   coord_flip()
+  
+  print(p)
+}
+```
